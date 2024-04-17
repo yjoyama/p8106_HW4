@@ -1,0 +1,35 @@
+---
+title: "Homework4"
+author: "Yuki Joyama"
+date: "2024-04-17"
+output: github_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, message = F, warning = F)
+
+library(tidyverse)
+library(ggplot2)
+library(rsample) 
+
+# setup plot theme
+theme_set(
+  theme_bw() +
+    theme(legend.position = "top")
+  )
+```
+
+```{r dataprep}
+# read csv files 
+df = read_csv("./College.csv") |> 
+  janitor::clean_names() |> 
+  dplyr::select(-college) |> 
+  dplyr::select(outstate, everything())
+
+# partition (training:test=80:20)
+set.seed(100)
+data_split = initial_split(df, prop = .80)
+train = training(data_split)
+test = testing(data_split)
+```
