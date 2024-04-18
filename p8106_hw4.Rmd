@@ -12,6 +12,11 @@ knitr::opts_chunk$set(echo = T, message = F, warning = F)
 library(tidyverse)
 library(ggplot2)
 library(rsample) 
+library(rpart)
+library(rpart.plot)
+library(ranger)
+library(caret)
+library(gbm)
 
 # setup plot theme
 theme_set(
@@ -33,3 +38,160 @@ data_split = initial_split(df, prop = .80)
 train = training(data_split)
 test = testing(data_split)
 ```
+
+# 1-a Regression Tree
+I will build a regression tree on the training data to predict the response `outstate`. 
+```{r}
+set.seed(100)
+
+tree1 <- rpart(
+  formula = outstate ~.,
+  data = train,
+  control = rpart.control(cp = 0)
+)
+
+# selecting an optimal cp
+cpTable <- tree1$cptable
+plotcp(tree1)
+```
+
+Now, I will prune the tree based on the `cp` table.
+```{r}
+# minimum cv error
+minErr <- which.min(cpTable[,4])
+tree2 <- rpart::prune(tree1, cp = cpTable[minErr, 1])
+```
+
+`cp` that gives the minimum cross-validation error is `r cpTable[minErr, 1]`. 
+
+The plot of the tree using the above `cp`:
+```{r}
+rpart.plot(tree2)
+```
+
+# 1-b Random Forest
+Here I will perform random forest on the training data using `caret` and `ranger``.  
+```{r}
+# set up cv
+ctrl <- trainControl(method = "cv")
+rf.grid <- expand.grid(
+  mtry = 1:16,
+  splitrule = "variance",
+  min.node.size = 1:6
+)
+
+# tune rf model using the training data
+set.seed(100)
+rf.fit <- train(
+  outstate ~.,
+  data = train,
+  method = "ranger",
+  tuneGrid = rf.grid,
+  trControl = ctrl
+)
+
+ggplot(rf.fit, highlight = TRUE)
+```
+
+The best tuning parameters are as follows:
+```{r}
+rf.fit$bestTune
+```
+
+Now, let's see the permutation-based variable importance.
+```{r}
+set.seed(100)
+rf.final.per <- ranger(
+  outstate ~.,
+  data = train,
+  mtry = rf.fit$bestTune[[1]],
+  splitrule = "variance",
+  min.node.size = rf.fit$bestTune[[3]],
+  importance = "permutation",
+  scale.permutation.importance = TRUE
+)
+
+barplot(
+  sort(ranger::importance(rf.final.per), decreasing = FALSE),
+  las = 2, horiz = TRUE, cex.names = 0.7,
+  col = colorRampPalette(colors = c("cyan", "blue"))(16)
+)
+```
+
+The plot indicates that the `expend` variable has the largest influence in the model with mean decrease in accuracy `r round(importance(rf.final.per)[15], 2)`%.
+
+```{r}
+# refit rf model using the best tune
+set.seed(100)
+rf.final <- ranger(
+  outstate ~.,
+  data = train,
+  mtry = rf.fit$bestTune[[1]],
+  min.node.size = rf.fit$bestTune[[3]]
+)
+
+# test error
+pred.rf <- predict(rf.final, data = test)$predictions
+RMSE(pred.rf, test$outstate)
+```
+
+The test error is `r round(RMSE(pred.rf, test$outstate), 2)`.
+
+# 1-c
+I will tune the `gbm` model using the training data. 
+```{r}
+# set grid
+gbm.grid <- expand.grid(
+  n.trees = c(5000, 10000, 20000, 30000),
+  interaction.depth = 1:4,
+  shrinkage = c(0.001, 0.005),
+  n.minobsinnode = c(5)
+)
+
+set.seed(100)
+gbm.fit <- train(
+  outstate ~.,
+  data = train,
+  method = "gbm",
+  tuneGrid = gbm.grid,
+  trControl = ctrl,
+  verbose = FALSE
+)
+
+ggplot(gbm.fit, highlight = TRUE)
+```
+
+Best tuning parameters selected by cross validation are as follows:
+```{r}
+gbm.fit$bestTune
+```
+
+```{r}
+summary(gbm.fit$finalModel, las = 2, cBars = 16, cex.names = 0.6)
+```
+
+Similar to the random forest, we can see that `expand` has the most influence on the response variable in this model. 
+
+```{r}
+# test error
+pred.gbm <- predict(gbm.fit, newdata = test)
+RMSE(pred.gbm, test$outstate)
+```
+
+The test error is `r round(RMSE(pred.gbm, test$outstate), 2)`.
+
+# 2-a
+```{r dataprep}
+# read csv files 
+df = read_csv("./auto.csv") |> 
+  janitor::clean_names()
+
+# partition (training:test=70:30)
+set.seed(100)
+data_split = initial_split(df, prop = .70)
+train = training(data_split)
+test = testing(data_split)
+```
+
+
+
