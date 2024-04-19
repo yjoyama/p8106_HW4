@@ -17,6 +17,7 @@ library(rpart.plot)
 library(ranger)
 library(caret)
 library(gbm)
+library(xgboost)
 
 # setup plot theme
 theme_set(
@@ -71,9 +72,13 @@ rpart.plot(tree2)
 
 # 1-b Random Forest
 Here I will perform random forest on the training data using `caret` and `ranger``.  
-```{r}
+```{r rf}
 # set up cv
-ctrl <- trainControl(method = "cv")
+ctrl <- trainControl(
+  method = "cv", 
+  allowParallel = TRUE
+)
+
 rf.grid <- expand.grid(
   mtry = 1:16,
   splitrule = "variance",
@@ -139,7 +144,7 @@ The test error is `r round(RMSE(pred.rf, test$outstate), 2)`.
 
 # 1-c
 I will tune the `gbm` model using the training data. 
-```{r}
+```{r gbm}
 # set grid
 gbm.grid <- expand.grid(
   n.trees = c(5000, 10000, 20000, 30000),
@@ -181,10 +186,14 @@ RMSE(pred.gbm, test$outstate)
 The test error is `r round(RMSE(pred.gbm, test$outstate), 2)`.
 
 # 2-a
-```{r dataprep}
+```{r data}
 # read csv files 
 df = read_csv("./auto.csv") |> 
-  janitor::clean_names()
+  janitor::clean_names() |> 
+  mutate(
+    mpg_cat = as.factor(mpg_cat),
+    origin = as.factor(origin)
+    )
 
 # partition (training:test=70:30)
 set.seed(100)
@@ -192,6 +201,95 @@ data_split = initial_split(df, prop = .70)
 train = training(data_split)
 test = testing(data_split)
 ```
+
+In this section, I will build a classification tree using the training data with `mpg_cat` as the response. 
+```{r}
+set.seed(100)
+tree1 <- rpart(
+  mpg_cat ~.,
+  data = train,
+  control = rpart.control(cp = 0)
+)
+
+cpTable <- printcp(tree1)
+plotcp(tree1)
+
+# minimum cv error 
+minErr <- which.min(cpTable[,4])
+tree2 <- rpart::prune(tree1, cp = cpTable[minErr, 1])
+rpart.plot(tree2)
+```
+
+Tree size corresponds to the lowest cv error is two.   
+Let's rerun the classification tree using 1 SE rule.
+```{r}
+# 1 se rule
+tree3 <- rpart::prune(
+  tree1, cp = cpTable[cpTable[,4] < cpTable[minErr, 4] + cpTable[minErr, 5], 1][1]
+)
+rpart.plot(tree3)
+```
+
+The tree size is the same. 
+
+# 2-b
+Here I will perform boosting on the training data. 
+```{r xgb, warning=FALSE, results=FALSE}
+# set up cv
+ctrl <- trainControl(
+  method = "cv", 
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  allowParallel = TRUE
+)
+
+# set grid
+xgb.grid <- expand.grid(
+  nrounds = seq(from = 200, to = 1000, by = 50),
+  max_depth = c(2, 3, 4, 5, 6),
+  eta = c(0.025, 0.05, 0.1, 0.3),
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+set.seed(100)
+xgb.fit <- train(
+  mpg_cat ~.,
+  data = train,
+  method = "xgbTree",
+  tuneGrid = xgb.grid,
+  trControl = ctrl,
+  verbose = TRUE
+)
+
+ggplot(gbm.fit, highlight = TRUE)
+```
+
+Best tuning parameters selected by cross validation are as follows:
+```{r}
+gbm.fit$bestTune
+```
+
+```{r}
+ggplot(varImp(xgb.fit, scale = FALSE))
+```
+
+The variable importance plot tells us that `displacement` has the most influence on the response variable in this model.
+
+```{r}
+# test error
+pred.xgb <- predict(xgb.fit, newdata = test, type = "raw")
+
+confusionMatrix(
+  data = pred.xgb,
+  reference = as.factor(test$mpg_cat)
+)
+```
+
+The misclassification error rate can be obtained by  
+1 - accuracy = 1 - 0.9153 = **`r 1 - 0.9153`**
 
 
 
